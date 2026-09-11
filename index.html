@@ -9,7 +9,10 @@
 <style>
   html, body { height: 100%; }
   body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  #viewport { position: relative; width: 100%; height: calc(100vh - 250px); min-height: 480px; border-radius: 0.75rem; overflow: hidden; }
+  /* App shell fills the viewport without page-level scrolling. */
+  .app-shell { display: flex; flex-direction: column; height: 100vh; min-height: 0; }
+  .app-main  { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 340px 1fr; gap: 12px; padding: 12px; max-width: 1600px; width: 100%; margin: 0 auto; }
+  #viewport { position: relative; width: 100%; height: 100%; min-height: 360px; border-radius: 0.75rem; overflow: hidden; background: #000; }
   #viewport canvas { display: block; }
   .variant-row { cursor: pointer; transition: background-color 0.12s ease; }
   .variant-row:hover { background-color: #f1f5f9; }
@@ -20,23 +23,35 @@
   .plddt-bar { background: linear-gradient(to right, #d62728, #ff7f0e, #eab308, #2ca02c, #1f77d4); }
   .badge { font-size: 0.68rem; font-weight: 600; padding: 0.1rem 0.45rem; border-radius: 9999px; white-space: nowrap; }
   #viewport .atom-label { pointer-events: none; }
+  /* Right column: viewer fills, details + footer fixed at bottom */
+  .app-right { display: flex; flex-direction: column; min-height: 0; gap: 10px; }
+  .app-right .viewer-card { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  .app-right .viewer-card > #viewport { flex: 1 1 auto; min-height: 0; }
+  /* Left column: variant list fills */
+  .app-left { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  /* Responsive: collapse to single column on narrow screens */
+  @media (max-width: 900px) { .app-main { grid-template-columns: 1fr; } }
+  details.cite > summary { list-style: none; cursor: pointer; color: #475569; }
+  details.cite > summary::-webkit-details-marker { display: none; }
+  details.cite > summary::before { content: '▸ '; display: inline-block; transition: transform 0.15s; }
+  details.cite[open] > summary::before { content: '▾ '; }
 </style>
 </head>
 <body class="bg-slate-100 text-slate-800">
 
 <!-- ============ HEADER ============ -->
 <header class="bg-slate-900 text-white shadow">
-  <div class="max-w-[1600px] mx-auto px-4 py-3 flex flex-wrap items-center gap-3">
+  <div class="max-w-[1600px] mx-auto px-4 py-2 flex flex-wrap items-center gap-3">
     <div class="mr-2">
-      <h1 class="text-lg font-bold leading-tight">ClinVar Missense 3D Visualizer</h1>
-      <p class="text-xs text-slate-400">Missense variants on AlphaFold structures &middot; ClinVar + UniProt + AFDB, all client-side</p>
+      <h1 class="text-base font-bold leading-tight">ClinVar Missense 3D Visualizer</h1>
+      <p class="text-[11px] text-slate-400 leading-tight">Missense variants on AlphaFold structures &middot; ClinVar + UniProt + AFDB + AlphaMissense, all client-side</p>
     </div>
     <div class="flex items-center gap-2 ml-auto flex-wrap">
       <label for="geneInput" class="text-xs text-slate-300 font-semibold">GENE</label>
       <input id="geneInput" type="text" value="BRCA1" placeholder="e.g. BRCA1, TP53, CFTR"
-             class="w-36 px-2 py-1.5 rounded text-sm text-slate-900 border border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500">
+             class="w-32 px-2 py-1 rounded text-sm text-slate-900 border border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500">
       <label for="maxInput" class="text-xs text-slate-300 font-semibold">MAX</label>
-      <select id="maxInput" class="px-2 py-1.5 rounded text-sm text-slate-900 border border-slate-600">
+      <select id="maxInput" class="px-2 py-1 rounded text-sm text-slate-900 border border-slate-600">
         <option value="50">50</option>
         <option value="100">100</option>
         <option value="200" selected>200</option>
@@ -50,16 +65,16 @@
         force refresh
       </label>
       <button id="searchBtn" onclick="searchGene()"
-              class="px-4 py-1.5 rounded text-sm font-bold bg-sky-600 hover:bg-sky-500 active:bg-sky-700 disabled:opacity-50">
+              class="px-4 py-1 rounded text-sm font-bold bg-sky-600 hover:bg-sky-500 active:bg-sky-700 disabled:opacity-50">
         Load
       </button>
     </div>
   </div>
   <!-- toolbar -->
   <div class="bg-slate-800 border-t border-slate-700">
-    <div class="max-w-[1600px] mx-auto px-4 py-2 flex flex-wrap items-center gap-2 text-xs">
-      <span class="text-slate-400 font-semibold mr-1">FILTER</span>
-      <select id="filterSel" onchange="applyFilterSort()" class="px-2 py-1 rounded text-slate-900 text-xs">
+    <div class="max-w-[1600px] mx-auto px-4 py-1.5 flex flex-wrap items-center gap-2 text-xs">
+      <span class="text-slate-400 font-semibold">FILTER</span>
+      <select id="filterSel" onchange="applyFilterSort()" class="px-2 py-0.5 rounded text-slate-900 text-xs">
         <option value="all">All classifications</option>
         <option value="pathogenic">Pathogenic</option>
         <option value="likely_pathogenic">Likely pathogenic</option>
@@ -72,44 +87,43 @@
         <option value="am_amb">AM: ambiguous</option>
         <option value="am_lb">AM: likely benign</option>
       </select>
-      <span class="text-slate-400 font-semibold ml-2 mr-1">SORT</span>
-      <select id="sortSel" onchange="applyFilterSort()" class="px-2 py-1 rounded text-slate-900 text-xs">
+      <span class="text-slate-400 font-semibold ml-1">SORT</span>
+      <select id="sortSel" onchange="applyFilterSort()" class="px-2 py-0.5 rounded text-slate-900 text-xs">
         <option value="pos">Residue position</option>
         <option value="sev">Severity first</option>
         <option value="am_score">AlphaMissense score</option>
       </select>
-      <span class="mx-2 text-slate-600">|</span>
-      <button onclick="resetView()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Reset view</button>
-      <button id="spinBtn" onclick="toggleSpin()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Spin: off</button>
-      <button id="labelBtn" onclick="toggleLabels()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Labels: on</button>
-      <button id="sphereBtn" onclick="toggleSpheres()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Spheres: on</button>
-      <button id="plddtBtn" onclick="togglePlddt()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Color: pLDDT</button>
-      <button id="amModeBtn" onclick="toggleAmMode()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Color: ClinVar</button>
-      <span id="status" class="ml-auto text-slate-300 italic">Ready. Press Load (or Enter).</span>
+      <span class="mx-1 text-slate-600">|</span>
+      <button onclick="resetView()" class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Reset view</button>
+      <button id="spinBtn" onclick="toggleSpin()" class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Spin: off</button>
+      <button id="labelBtn" onclick="toggleLabels()" class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Labels: on</button>
+      <button id="sphereBtn" onclick="toggleSpheres()" class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Spheres: on</button>
+      <button id="plddtBtn" onclick="togglePlddt()" class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Color: pLDDT</button>
+      <button id="amModeBtn" onclick="toggleAmMode()" class="px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Color: ClinVar</button>
+      <span id="status" class="ml-auto text-slate-300 italic truncate max-w-[40%]">Ready. Press Load (or Enter).</span>
     </div>
   </div>
 </header>
 
 <!-- ============ MAIN ============ -->
-<main class="max-w-[1600px] mx-auto px-4 py-3 grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-3">
-
+<div class="app-main">
   <!-- LEFT: variant list -->
-  <section class="bg-white rounded-xl shadow flex flex-col overflow-hidden" style="max-height: calc(100vh - 190px); min-height: 480px;">
-    <div class="px-3 py-2 border-b border-slate-200 flex items-center gap-2">
+  <section class="app-left bg-white rounded-xl shadow">
+    <div class="px-3 py-1.5 border-b border-slate-200 flex items-center gap-2">
       <h2 class="font-bold text-sm">Missense variants</h2>
       <span id="varCount" class="text-xs text-slate-500"></span>
       <span id="structBadge" class="ml-auto text-xs"></span>
     </div>
-    <div id="proteinInfo" class="px-3 py-2 text-xs text-slate-600 border-b border-slate-100 bg-slate-50"></div>
+    <div id="proteinInfo" class="px-3 py-1.5 text-xs text-slate-600 border-b border-slate-100 bg-slate-50"></div>
     <div id="variantList" class="scroll-thin overflow-y-auto flex-1 divide-y divide-slate-100">
       <div class="p-4 text-sm text-slate-400">No data yet. Enter a gene symbol and press Load.</div>
     </div>
   </section>
 
-  <!-- RIGHT: 3D viewer + details -->
-  <section class="flex flex-col gap-3">
-    <div class="bg-white rounded-xl shadow p-2">
-      <div id="viewport" class="bg-black"></div>
+  <!-- RIGHT: 3D viewer + details + citations + footer -->
+  <section class="app-right">
+    <div class="viewer-card bg-white rounded-xl shadow p-2">
+      <div id="viewport"></div>
       <div class="flex flex-wrap items-center gap-x-4 gap-y-1 px-2 pt-2 text-[11px] text-slate-600">
         <span class="font-semibold">Structure pLDDT:</span>
         <span class="flex items-center gap-1">
@@ -120,21 +134,22 @@
       </div>
     </div>
 
-    <div id="details" class="bg-white rounded-xl shadow px-4 py-3 text-sm">
+    <div id="details" class="bg-white rounded-xl shadow px-4 py-2 text-sm">
       <div class="text-slate-400">Select a variant from the list (or click a sphere in 3D) to see details.</div>
     </div>
 
-    <div class="text-[11px] text-slate-500 px-1 leading-relaxed">
-      <b>Data:</b> ClinVar (NCBI E-utilities) &middot; UniProt REST &middot; AlphaFold DB &middot; AlphaMissense via MyVariant/dbNSFP &middot; rendered with 3Dmol.js.
-      See <a class="text-sky-700 hover:underline" href="https://github.com/hiteshnagar2611/ClinView#readme" target="_blank">README</a> for full citations.
-      Residue numbers come from ClinVar HGVS p. notation (RefSeq-based). If the RefSeq isoform differs from the UniProt
-      canonical sequence, highlights may be offset &mdash; a mismatch warning is shown per variant when detected.
-      Low-confidence (orange/red) regions of AlphaFold models should be interpreted with caution.
-    </div>
+    <details class="cite bg-white rounded-xl shadow px-4 py-1 text-[11px] text-slate-500 leading-relaxed">
+      <summary>About the data &amp; how to cite</summary>
+      <div class="mt-1">
+        <b>Data:</b> ClinVar (NCBI E-utilities) &middot; UniProt REST &middot; AlphaFold DB &middot; AlphaMissense via MyVariant/dbNSFP &middot; rendered with 3Dmol.js.
+        See <a class="text-sky-700 hover:underline" href="https://github.com/hiteshnagar2611/ClinView#readme" target="_blank">README</a> for full citations.
+        Residue numbers come from ClinVar HGVS p. (RefSeq-based); if the RefSeq isoform differs from UniProt canonical, the app shows a mismatch warning.
+      </div>
+    </details>
   </section>
-</main>
+</div>
 
-<footer class="max-w-[1600px] mx-auto px-4 pb-4 pt-1 text-center text-xs text-slate-500">
+<footer class="max-w-[1600px] mx-auto px-4 pb-1 pt-1 text-center text-[11px] text-slate-500">
   Made by <span class="font-semibold text-slate-700">Hitesh</span> and <span class="font-semibold text-slate-700">Opencode</span>
   <span aria-hidden="true">🧬 ✨ 🧪</span>
   &middot;
