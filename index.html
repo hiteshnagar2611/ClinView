@@ -45,6 +45,10 @@
         <option value="2000">2000</option>
         <option value="all">all</option>
       </select>
+      <label class="flex items-center gap-1 text-xs text-slate-300" title="Re-query ClinVar instead of using local cache (7-day TTL)">
+        <input id="cacheChk" type="checkbox" class="accent-sky-500">
+        force refresh
+      </label>
       <button id="searchBtn" onclick="searchGene()"
               class="px-4 py-1.5 rounded text-sm font-bold bg-sky-600 hover:bg-sky-500 active:bg-sky-700 disabled:opacity-50">
         Load
@@ -285,6 +289,64 @@ async function fetchJson(url) {
   return r.json();
 }
 
+// localStorage cache for parsed ClinVar variant lists. Keyed by gene + max + forceRefresh.
+// Cached payloads are slimmed-down records (not raw NCBI JSON) and expire after 7 days.
+const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+function cacheKey(gene, max) { return `clinview:v1:${gene}:${max}`; }
+function cacheGet(gene, max) {
+  try {
+    const raw = localStorage.getItem(cacheKey(gene, max));
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || !obj.ts || !Array.isArray(obj.recs)) return null;
+    if (Date.now() - obj.ts > CACHE_TTL_MS) { localStorage.removeItem(cacheKey(gene, max)); return null; }
+    return obj;
+  } catch (e) { return null; }
+}
+function cacheSet(gene, max, recs, extra) {
+  try {
+    localStorage.setItem(cacheKey(gene, max), JSON.stringify({ ts: Date.now(), recs, extra: extra || {} }));
+  } catch (e) {
+    // localStorage quota (≈5 MB) — drop oldest keys if full
+    try {
+      const keys = Object.keys(localStorage).filter(k => k.startsWith('clinview:'));
+      keys.sort();
+      while (keys.length > 3) { localStorage.removeItem(keys.shift()); }
+      localStorage.setItem(cacheKey(gene, max), JSON.stringify({ ts: Date.now(), recs }));
+    } catch (_) { /* best effort */ }
+  }
+}
+function cacheClear() {
+  const keys = Object.keys(localStorage).filter(k => k.startsWith('clinview:'));
+  keys.forEach(k => localStorage.removeItem(k));
+}
+
+// Stream esummary pages via Entrez WebEnv. Avoids building huge idlist URLs.
+async function fetchAllSummaries(gene, retmax, onProgress) {
+  const term = encodeURIComponent(gene + '[gene]') + '+AND+' + encodeURIComponent('missense[variant type]');
+  const es = await fetchJson(`${EUTILS}/esearch.fcgi?db=clinvar&term=${term}&retmax=${retmax}&retmode=json&usehistory=y`);
+  const total = parseInt(((es.esearchresult || {}).count) || '0', 10);
+  const we = es.esearchresult && es.esearchresult.webenv;
+  const qk = es.esearchresult && es.esearchresult.querykey;
+  if (!we || !qk) throw new Error('Entrez WebEnv not returned — esummary paging unavailable');
+  const want = Math.min(total, retmax);
+  const BATCH = 500;
+  const recs = [];
+  const nBatches = Math.ceil(want / BATCH);
+  for (let start = 0; start < want; start += BATCH) {
+    const size = Math.min(BATCH, want - start);
+    const sm = await fetchJson(`${EUTILS}/esummary.fcgi?db=clinvar&query_key=${qk}&WebEnv=${we}&retstart=${start}&retmax=${size}&retmode=json`);
+    const res = sm.result || {};
+    for (const uid of (res.uids || [])) {
+      if (!res[uid]) continue;
+      const v = parseRecord(uid, res[uid], gene);
+      if (v) recs.push(v);
+    }
+    if (onProgress) onProgress(Math.min(start + size, want), want, total, start / BATCH + 1, nBatches);
+  }
+  return { recs, total };
+}
+
 // Bulk-fetch AlphaMissense (via dbNSFP) scores from MyVariant.info for given ClinVar UIDs.
 // POST /v1/variant with `ids: ["clinvar.variant_id:<uid>", ...]` returns
 // `[{query, notfound, dbnsfp.alphamissense}, ...]` — query echoes back the lookup key.
@@ -374,48 +436,78 @@ async function searchGene() {
   state.af = null; state.uniprot = null; state.modelLoaded = false; state.amStats = null;
   renderList(); renderDetails(); drawLegend();
 
-  try {
-    // 1. ClinVar search
-    setStatus('Searching ClinVar for missense variants in ' + gene + ' …');
-    const term = encodeURIComponent(gene + '[gene]') + '+AND+' + encodeURIComponent('missense[variant type]');
-    // "all" -> retmax huge; numeric values are honoured directly.
-    // usehistory=y gives us a WebEnv so very large queries don't blow up URL length.
-    const retmax = (max === 'all' || max === 'All') ? 100000 : max;
-    const es = await fetchJson(`${EUTILS}/esearch.fcgi?db=clinvar&term=${term}&retmax=${retmax}&retmode=json&usehistory=y`);
-    const ids = ((es.esearchresult || {}).idlist || []);
-    const total = parseInt(((es.esearchresult || {}).count) || '0', 10);
-    if (!ids.length) { setStatus(`No missense ClinVar records found for ${gene}.`); btn.disabled = false; return; }
-    const want = Math.min(ids.length, retmax);
-    setStatus(`Found ${total} records — fetching summaries for up to ${want} (${Math.ceil(want / 500) * 4}s estimated) …`);
+  const forceRefresh = !!document.getElementById('cacheChk') && document.getElementById('cacheChk').checked;
 
-    // 2. Summaries in batches of 500 (largest stable esummary URL). Each batch
-    //    can take 5-15s; total wall time is ~12s per 500 records, so be patient.
-    const BATCH = 500;
-    const recs = [];
-    const nBatches = Math.ceil(want / BATCH);
-    for (let i = 0; i < want; i += BATCH) {
-      const chunk = ids.slice(i, i + BATCH);
-      const sm = await fetchJson(`${EUTILS}/esummary.fcgi?db=clinvar&id=${chunk.join(',')}&retmode=json`);
-      const res = sm.result || {};
-      for (const uid of (res.uids || chunk)) {
-        if (!res[uid]) continue;
-        const v = parseRecord(uid, res[uid], gene);
-        if (v) recs.push(v);
+  try {
+    // 1. ClinVar search + summaries — check localStorage cache first.
+    setStatus('Searching ClinVar for missense variants in ' + gene + ' …');
+    const retmax = (max === 'all' || max === 'All') ? 100000 : max;
+    let recs = null, total = 0;
+    if (!forceRefresh) {
+      const cached = cacheGet(gene, max);
+      if (cached) {
+        recs = cached.recs;
+        total = cached.total || recs.length;
+        setStatus(`Loaded ${recs.length} missense variants from cache (≤7 days old). Set "force refresh" to re-query.`);
       }
-      const done = Math.min(i + BATCH, want);
-      setStatus(`Parsed ${recs.length}/${done} missense variants (batch ${i / BATCH + 1}/${nBatches}) …`);
+    }
+    if (!recs) {
+      try {
+        const result = await fetchAllSummaries(gene, retmax, (done, want, tot, b, n) => {
+          setStatus(`Fetching ClinVar summaries (${done}/${want} of ${tot}) batch ${b}/${n} …`);
+        });
+        recs = result.recs; total = result.total;
+        cacheSet(gene, max, recs, { total });
+      } catch (e) {
+        // Fallback to single huge idlist (works for retmax ≤ a few thousand)
+        console.warn('WebEnv paging failed, falling back to single esearch:', e.message);
+        const term = encodeURIComponent(gene + '[gene]') + '+AND+' + encodeURIComponent('missense[variant type]');
+        const es = await fetchJson(`${EUTILS}/esearch.fcgi?db=clinvar&term=${term}&retmax=${retmax}&retmode=json`);
+        const ids = ((es.esearchresult || {}).idlist || []);
+        total = parseInt(((es.esearchresult || {}).count) || '0', 10);
+        recs = [];
+        const BATCH = 500;
+        for (let i = 0; i < ids.length; i += BATCH) {
+          const chunk = ids.slice(i, i + BATCH);
+          const sm = await fetchJson(`${EUTILS}/esummary.fcgi?db=clinvar&id=${chunk.join(',')}&retmode=json`);
+          const res = sm.result || {};
+          for (const uid of (res.uids || chunk)) {
+            if (!res[uid]) continue;
+            const v = parseRecord(uid, res[uid], gene);
+            if (v) recs.push(v);
+          }
+          setStatus(`Fetching summaries (${Math.min(i + BATCH, ids.length)}/${ids.length}) …`);
+        }
+        cacheSet(gene, max, recs, { total });
+      }
     }
     if (!recs.length) { setStatus(`No parseable missense protein changes for ${gene}.`); btn.disabled = false; return; }
     state.gene = gene;
     state.variants = recs;
 
-    // 2b. AlphaMissense scores (MyVariant / dbNSFP) — runs in parallel with structure fetch
+    // 2b. AlphaMissense scores (MyVariant / dbNSFP). Cached 30 days because
+    // dbNSFP / AM scores only change with each major release (rare).
     const amUids = recs.map(v => v.uid);
-    const amPromise = fetchAlphaMissense(amUids, (done, total) => {
-      setStatus(`Fetching AlphaMissense scores (${done}/${total}) …`);
-    }).then(amMap => {
+    const amKey = `clinview:am:v1:${gene}`;
+    let cachedAM = null;
+    if (!forceRefresh) {
+      try {
+        const raw = localStorage.getItem(amKey);
+        if (raw) {
+          const obj = JSON.parse(raw);
+          if (obj && obj.ts && Date.now() - obj.ts < 30 * 24 * 60 * 60 * 1000) cachedAM = obj.am || {};
+        }
+      } catch (e) { /* ignore */ }
+    }
+    const needFetch = amUids.filter(u => !(u in (cachedAM || {})));
+    const amPromise = (needFetch.length === amUids.length
+      ? fetchAlphaMissense(amUids, (done, total) => setStatus(`Fetching AlphaMissense scores (${done}/${total}) …`))
+      : fetchAlphaMissense(needFetch, (done, total) => setStatus(`Fetching AlphaMissense scores (${done + (amUids.length - needFetch.length)}/${amUids.length}) …`))
+    ).then(amMap => {
+      const merged = Object.assign({}, cachedAM, Object.fromEntries(amMap));
+      try { localStorage.setItem(amKey, JSON.stringify({ ts: Date.now(), am: merged })); } catch (e) { /* quota: best effort */ }
       for (const v of recs) {
-        const am = amMap.get(v.uid);
+        const am = merged[v.uid];
         v.am = am ? { ...am, amCat: amClassFromCode(am.class) } : null;
       }
       state.amStats = computeAmStats(recs);
