@@ -118,7 +118,8 @@
     </div>
 
     <div class="text-[11px] text-slate-500 px-1 leading-relaxed">
-      <b>Data:</b> ClinVar (NCBI E-utilities) &middot; UniProt REST &middot; AlphaFold DB &middot; rendered with 3Dmol.js.
+      <b>Data:</b> ClinVar (NCBI E-utilities) &middot; UniProt REST &middot; AlphaFold DB &middot; AlphaMissense via MyVariant/dbNSFP &middot; rendered with 3Dmol.js.
+      See <a class="text-sky-700 hover:underline" href="https://github.com/hiteshnagar2611/ClinView#readme" target="_blank">README</a> for full citations.
       Residue numbers come from ClinVar HGVS p. notation (RefSeq-based). If the RefSeq isoform differs from the UniProt
       canonical sequence, highlights may be offset &mdash; a mismatch warning is shown per variant when detected.
       Low-confidence (orange/red) regions of AlphaFold models should be interpreted with caution.
@@ -132,7 +133,25 @@
    Flow: gene symbol -> ClinVar esearch/esummary (missense) ->
          UniProt canonical accession -> AlphaFold DB prediction (PDB) ->
          3Dmol.js rendering with per-residue spheres colored by
-         clinical significance.
+         clinical significance, overlaid with AlphaMissense scores.
+
+   Data & tool citations (please cite the originals when publishing work
+   that uses this app):
+     - ClinVar:  Landrum et al., Nucleic Acids Res. 2020;48(D1):D835–D844
+                 doi:10.1093/nar/gkz1022
+     - AlphaFold DB / AlphaFold structures:
+                 Jumper et al., Nature 2021;596:583–589
+                 doi:10.1038/s41586-021-03819-2
+                 Varadi et al., Nucleic Acids Res. 2024;52(D1):D368–D375
+                 doi:10.1093/nar/gkad1051
+     - UniProt:  The UniProt Consortium, Nucleic Acids Res.
+                 2025;53(D1):D609–D617  doi:10.1093/nar/gkae1010
+     - AlphaMissense pathogenicity scores:
+                 Cheng et al., Science 2023;381:eadl1208
+                 doi:10.1126/science.adg7492
+                 (served via MyVariant.info / dbNSFP, see Liu et al.)
+     - 3Dmol.js: Rego & Koes, Bioinformatics 2015;31(8):1322–1324
+                 doi:10.1093/bioinformatics/btu829
    ===================================================================== */
 
 const EUTILS = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils';
