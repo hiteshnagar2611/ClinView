@@ -17,6 +17,8 @@
   .variant-row { cursor: pointer; transition: background-color 0.12s ease; }
   .variant-row:hover { background-color: #f1f5f9; }
   .variant-row.selected { background-color: #e0f2fe; border-left-color: #0284c7 !important; }
+  .variant-row[hidden] { display: none !important; }
+  #variantList { overflow-x: hidden; }
   .scroll-thin::-webkit-scrollbar { width: 8px; }
   .scroll-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
   .scroll-thin::-webkit-scrollbar-track { background: transparent; }
@@ -113,6 +115,11 @@
       <h2 class="font-bold text-sm">Missense variants</h2>
       <span id="varCount" class="text-xs text-slate-500"></span>
       <span id="structBadge" class="ml-auto text-xs"></span>
+    </div>
+    <div class="px-3 py-1.5 border-b border-slate-100 bg-slate-50">
+      <input id="listSearch" type="text" placeholder="Filter list (e.g. 600, Glu, BRCA)"
+             oninput="applyListFilter()" autocomplete="off"
+             class="w-full px-2 py-0.5 rounded text-xs border border-slate-300 focus:outline-none focus:ring-1 focus:ring-sky-500">
     </div>
     <div id="proteinInfo" class="px-3 py-1.5 text-xs text-slate-600 border-b border-slate-100 bg-slate-50"></div>
     <div id="variantList" class="scroll-thin overflow-y-auto flex-1 divide-y divide-slate-100">
@@ -653,11 +660,12 @@ function renderProteinInfo() {
 
 function renderList() {
   const box = document.getElementById('variantList');
-  document.getElementById('varCount').textContent =
-    state.visible.length ? `${state.visible.length} shown (${state.variants.length} total)` : '';
-  if (!state.visible.length) {
+  const total = state.variants.length;
+  const shown = state.visible.length;
+  document.getElementById('varCount').textContent = shown ? `${shown}/${total}` : '';
+  if (!shown) {
     box.innerHTML = '<div class="p-4 text-sm text-slate-400">' +
-      (state.variants.length ? 'No variants match this filter.' : 'No data yet. Enter a gene symbol and press Load.') + '</div>';
+      (total ? 'No variants match this filter.' : 'No data yet. Enter a gene symbol and press Load.') + '</div>';
     return;
   }
   box.innerHTML = state.visible.map((v, i) => {
@@ -665,27 +673,44 @@ function renderList() {
     const sel = (state.variants.indexOf(v) === state.selected) ? ' selected' : '';
     const flag = v.inModel === false ? ' ⚠️' : (v.refMatch === false ? ' *' : '');
     const am = v.am;
-    const amBadge = am ? (() => {
-      const col = AM_CAT[am.amCat] ? AM_CAT[am.amCat].color : amColor(am.score);
-      const sc = am.score != null ? am.score.toFixed(3) : '—';
-      return `<span class="badge ml-1 font-mono" style="background:${col}22;color:${col};border:1px solid ${col}55" title="AlphaMissense ${am.nIso} isoform(s)">AM ${sc}</span>`;
-    })() : '';
-    return `<div class="variant-row px-3 py-2 border-l-4 flex items-start gap-2${sel}" style="border-left-color:${c.color}" data-i="${i}" onclick="selectVisible(${i}, true)">
-      <span class="mt-1 inline-block w-2.5 h-2.5 rounded-full shrink-0" style="background:${c.color}"></span>
-      <div class="min-w-0">
-        <div class="font-mono font-bold text-[13px] leading-tight">p.${esc(shortChange(v))}${flag}
-          <span class="badge ml-1" style="background:${c.color}22;color:${c.color};border:1px solid ${c.color}55">${esc(c.label)}</span>
-          ${amBadge}
-        </div>
-        <div class="text-[11px] text-slate-500 truncate">${esc(v.traits[0] || 'condition not specified')}</div>
-        <div class="text-[10px] text-slate-400 font-mono">VCV ${esc(v.vcv)}${v.rsid ? ' · rs' + esc(v.rsid) : ''}</div>
-      </div>
+    return `<div class="variant-row px-2 py-1 border-l-4 flex items-center gap-2${sel}" style="border-left-color:${c.color}" data-i="${i}" data-pos="${v.pos}" data-text="${esc((shortChange(v) + ' ' + (v.traits[0]||'') + ' ' + (v.vcv||'') + ' ' + (v.rsid||'') + ' ' + (v.hgvs_p||'')).toLowerCase())}" onclick="selectVisible(${i}, true)">
+      <span class="inline-block w-2 h-2 rounded-full shrink-0" style="background:${c.color}"></span>
+      <span class="font-mono font-bold text-[12px] leading-tight shrink-0">p.${esc(shortChange(v))}${flag}</span>
+      <span class="badge shrink-0" style="background:${c.color}22;color:${c.color};border:1px solid ${c.color}55" title="${esc(c.label)}">${esc(c.label.replace('Uncertain significance', 'VUS').replace('Pathogenic', 'P').replace('Likely pathogenic', 'LP').replace('Likely benign', 'LB').replace('Benign', 'B').replace('Conflicting', 'Conf').replace('Other / not provided', 'Other'))}</span>
+      ${am ? `<span class="badge font-mono shrink-0" style="background:${amColor(am.score)}22;color:${amColor(am.score)};border:1px solid ${amColor(am.score)}55" title="AlphaMissense ${am.nIso} isoform(s)">${am.score != null ? am.score.toFixed(2) : '—'}</span>` : ''}
+      <span class="text-[10px] text-slate-500 truncate min-w-0 flex-1" title="${esc(v.traits[0] || '')}">${esc(v.traits[0] || '—')}</span>
+      <span class="text-[10px] text-slate-400 font-mono shrink-0">${v.rsid ? 'rs' + esc(v.rsid) : esc(v.vcv)}</span>
     </div>`;
   }).join('');
+  applyListFilter();   // re-apply current search text on every re-render
   const selIdx = state.visible.findIndex(v => state.variants.indexOf(v) === state.selected);
   if (selIdx >= 0) {
-    const el = box.querySelector(`[data-i="${selIdx}"]`);
+    const el = box.querySelector(`[data-i="${selIdx}"]:not([hidden])`);
     if (el) el.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+// Live text-search filter over the already-rendered list rows.
+// Hides rows whose data-text does not include the query (case-insensitive).
+// Re-counts the varCount badge to reflect what's actually visible.
+function applyListFilter() {
+  const input = document.getElementById('listSearch');
+  if (!input) return;
+  const q = (input.value || '').trim().toLowerCase();
+  const rows = document.querySelectorAll('#variantList .variant-row');
+  let shown = 0;
+  rows.forEach(r => {
+    const match = !q || (r.getAttribute('data-text') || '').includes(q);
+    r.hidden = !match;
+    if (match) shown++;
+  });
+  const vc = document.getElementById('varCount');
+  if (state.variants.length) {
+    vc.textContent = q
+      ? `${shown} match · ${state.variants.length} total`
+      : `${state.visible.length}/${state.variants.length}`;
+  } else {
+    vc.textContent = '';
   }
 }
 
