@@ -41,6 +41,9 @@
         <option value="100">100</option>
         <option value="200" selected>200</option>
         <option value="500">500</option>
+        <option value="1000">1000</option>
+        <option value="2000">2000</option>
+        <option value="all">all</option>
       </select>
       <button id="searchBtn" onclick="searchGene()"
               class="px-4 py-1.5 rounded text-sm font-bold bg-sky-600 hover:bg-sky-500 active:bg-sky-700 disabled:opacity-50">
@@ -286,11 +289,13 @@ async function fetchJson(url) {
 // POST /v1/variant with `ids: ["clinvar.variant_id:<uid>", ...]` returns
 // `[{query, notfound, dbnsfp.alphamissense}, ...]` — query echoes back the lookup key.
 // Coverage depends on whether the ClinVar UID is in the dbNSFP release.
-async function fetchAlphaMissense(uids) {
+async function fetchAlphaMissense(uids, onProgress) {
   const map = new Map();
   if (!uids.length) return map;
-  for (let i = 0; i < uids.length; i += 80) {
-    const chunk = uids.slice(i, i + 80);
+  const BATCH = 80;
+  const nBatches = Math.ceil(uids.length / BATCH);
+  for (let i = 0; i < uids.length; i += BATCH) {
+    const chunk = uids.slice(i, i + BATCH);
     const ids = chunk.map(u => `clinvar.variant_id:${u}`);
     try {
       const r = await fetch(`${MYVARIANT}/variant`, {
@@ -322,6 +327,7 @@ async function fetchAlphaMissense(uids) {
     } catch (e) {
       console.warn('AlphaMissense batch failed:', e.message);
     }
+    if (onProgress) onProgress(Math.min(i + BATCH, uids.length), uids.length);
   }
   return map;
 }
@@ -360,7 +366,8 @@ async function searchGene() {
   const geneRaw = document.getElementById('geneInput').value.trim();
   if (!geneRaw) { setStatus('Enter a gene symbol first.'); return; }
   const gene = geneRaw.toUpperCase();
-  const max = parseInt(document.getElementById('maxInput').value, 10) || 200;
+  const maxRaw = document.getElementById('maxInput').value;
+  const max = /^\d+$/.test(maxRaw) ? parseInt(maxRaw, 10) : maxRaw;   // numeric or "all"
   const btn = document.getElementById('searchBtn');
   btn.disabled = true;
   state.selected = -1; state.variants = []; state.visible = []; state.byPos = {};
@@ -371,16 +378,23 @@ async function searchGene() {
     // 1. ClinVar search
     setStatus('Searching ClinVar for missense variants in ' + gene + ' …');
     const term = encodeURIComponent(gene + '[gene]') + '+AND+' + encodeURIComponent('missense[variant type]');
-    const es = await fetchJson(`${EUTILS}/esearch.fcgi?db=clinvar&term=${term}&retmax=${max}&retmode=json`);
+    // "all" -> retmax huge; numeric values are honoured directly.
+    // usehistory=y gives us a WebEnv so very large queries don't blow up URL length.
+    const retmax = (max === 'all' || max === 'All') ? 100000 : max;
+    const es = await fetchJson(`${EUTILS}/esearch.fcgi?db=clinvar&term=${term}&retmax=${retmax}&retmode=json&usehistory=y`);
     const ids = ((es.esearchresult || {}).idlist || []);
     const total = parseInt(((es.esearchresult || {}).count) || '0', 10);
     if (!ids.length) { setStatus(`No missense ClinVar records found for ${gene}.`); btn.disabled = false; return; }
-    setStatus(`Found ${total} records — fetching summaries for ${ids.length} …`);
+    const want = Math.min(ids.length, retmax);
+    setStatus(`Found ${total} records — fetching summaries for up to ${want} (${Math.ceil(want / 500) * 4}s estimated) …`);
 
-    // 2. Summaries in batches
+    // 2. Summaries in batches of 500 (largest stable esummary URL). Each batch
+    //    can take 5-15s; total wall time is ~12s per 500 records, so be patient.
+    const BATCH = 500;
     const recs = [];
-    for (let i = 0; i < ids.length; i += 150) {
-      const chunk = ids.slice(i, i + 150);
+    const nBatches = Math.ceil(want / BATCH);
+    for (let i = 0; i < want; i += BATCH) {
+      const chunk = ids.slice(i, i + BATCH);
       const sm = await fetchJson(`${EUTILS}/esummary.fcgi?db=clinvar&id=${chunk.join(',')}&retmode=json`);
       const res = sm.result || {};
       for (const uid of (res.uids || chunk)) {
@@ -388,14 +402,18 @@ async function searchGene() {
         const v = parseRecord(uid, res[uid], gene);
         if (v) recs.push(v);
       }
-      setStatus(`Parsed ${recs.length} missense variants (${Math.min(i + 150, ids.length)}/${ids.length}) …`);
+      const done = Math.min(i + BATCH, want);
+      setStatus(`Parsed ${recs.length}/${done} missense variants (batch ${i / BATCH + 1}/${nBatches}) …`);
     }
     if (!recs.length) { setStatus(`No parseable missense protein changes for ${gene}.`); btn.disabled = false; return; }
     state.gene = gene;
     state.variants = recs;
 
     // 2b. AlphaMissense scores (MyVariant / dbNSFP) — runs in parallel with structure fetch
-    const amPromise = fetchAlphaMissense(recs.map(v => v.uid)).then(amMap => {
+    const amUids = recs.map(v => v.uid);
+    const amPromise = fetchAlphaMissense(amUids, (done, total) => {
+      setStatus(`Fetching AlphaMissense scores (${done}/${total}) …`);
+    }).then(amMap => {
       for (const v of recs) {
         const am = amMap.get(v.uid);
         v.am = am ? { ...am, amCat: amClassFromCode(am.class) } : null;
