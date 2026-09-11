@@ -9,16 +9,19 @@
 <style>
   html, body { height: 100%; }
   body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  /* App shell fills the viewport without page-level scrolling. */
-  .app-shell { display: flex; flex-direction: column; height: 100vh; min-height: 0; }
+  /* App shell: scroll the page if everything doesn't fit, but the 3D viewer
+     itself stays a fixed height regardless of layout. */
+  .app-shell { display: flex; flex-direction: column; min-height: 100vh; }
   .app-main  {
-    flex: 1 1 auto; min-height: 0;
+    flex: 0 0 auto;
     display: grid; grid-template-columns: 340px 1fr;
-    grid-template-rows: minmax(0, 1fr);
+    grid-template-rows: auto;
     gap: 12px; padding: 12px;
     max-width: 1600px; width: 100%; margin: 0 auto;
   }
-  #viewport { position: relative; width: 100%; height: 100%; min-height: 360px; border-radius: 0.75rem; overflow: hidden; background: #000; }
+  #viewport { position: relative; width: 100%; height: 640px; min-height: 640px; border-radius: 0.75rem; overflow: hidden; background: #000; }
+  @media (max-height: 800px) { #viewport { height: 520px; min-height: 520px; } }
+  @media (max-height: 650px) { #viewport { height: 420px; min-height: 420px; } }
   #viewport canvas { display: block; }
   .variant-row { cursor: pointer; transition: background-color 0.12s ease; }
   .variant-row:hover { background-color: #f1f5f9; }
@@ -31,22 +34,15 @@
   .plddt-bar { background: linear-gradient(to right, #d62728, #ff7f0e, #eab308, #2ca02c, #1f77d4); }
   .badge { font-size: 0.68rem; font-weight: 600; padding: 0.1rem 0.45rem; border-radius: 9999px; white-space: nowrap; }
   #viewport .atom-label { pointer-events: none; }
-  /* Right column: viewer fills the row, details + footer fixed at bottom */
-  .app-right {
-    display: grid;
-    grid-template-rows: minmax(0, 1fr) auto auto;
-    gap: 10px;
-    min-height: 0;
-    overflow: hidden;
-  }
-  .viewer-card { background: white; border-radius: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); padding: 8px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-  .viewer-card > #viewport { flex: 1 1 auto; min-height: 0; }
-  /* Left column: variant list fills */
-  .app-left { display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: white; border-radius: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  /* Right column: simple flow — viewer at fixed height, details + cite follow. */
+  .app-right { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .viewer-card { background: white; border-radius: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); padding: 8px; }
+  /* Left column: list panel scrolls internally when tall. */
+  .app-left { display: flex; flex-direction: column; min-height: 520px; max-height: calc(100vh - 200px); overflow: hidden; background: white; border-radius: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
   /* Responsive: collapse to single column on narrow screens */
   @media (max-width: 900px) {
-    .app-main { grid-template-columns: 1fr; grid-template-rows: minmax(280px, 50vh) minmax(0, 1fr); }
-    .app-right { grid-template-rows: minmax(0, 1fr) auto auto; }
+    .app-main { grid-template-columns: 1fr; }
+    .app-left { max-height: 420px; min-height: 420px; }
   }
   details.cite > summary { list-style: none; cursor: pointer; color: #475569; }
   details.cite > summary::-webkit-details-marker { display: none; }
