@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClinVar Missense 3D Visualizer</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://3dmol.csb.pitt.edu/build/3Dmol-min.js"></script>
+<style>
+  html, body { height: 100%; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #viewport { position: relative; width: 100%; height: calc(100vh - 250px); min-height: 480px; border-radius: 0.75rem; overflow: hidden; }
+  #viewport canvas { display: block; }
+  .variant-row { cursor: pointer; transition: background-color 0.12s ease; }
+  .variant-row:hover { background-color: #f1f5f9; }
+  .variant-row.selected { background-color: #e0f2fe; border-left-color: #0284c7 !important; }
+  .scroll-thin::-webkit-scrollbar { width: 8px; }
+  .scroll-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+  .scroll-thin::-webkit-scrollbar-track { background: transparent; }
+  .plddt-bar { background: linear-gradient(to right, #d62728, #ff7f0e, #eab308, #2ca02c, #1f77d4); }
+  .badge { font-size: 0.68rem; font-weight: 600; padding: 0.1rem 0.45rem; border-radius: 9999px; white-space: nowrap; }
+  #viewport .atom-label { pointer-events: none; }
+</style>
+</head>
+<body class="bg-slate-100 text-slate-800">
+
+<!-- ============ HEADER ============ -->
+<header class="bg-slate-900 text-white shadow">
+  <div class="max-w-[1600px] mx-auto px-4 py-3 flex flex-wrap items-center gap-3">
+    <div class="mr-2">
+      <h1 class="text-lg font-bold leading-tight">ClinVar Missense 3D Visualizer</h1>
+      <p class="text-xs text-slate-400">Missense variants on AlphaFold structures &middot; ClinVar + UniProt + AFDB, all client-side</p>
+    </div>
+    <div class="flex items-center gap-2 ml-auto flex-wrap">
+      <label for="geneInput" class="text-xs text-slate-300 font-semibold">GENE</label>
+      <input id="geneInput" type="text" value="BRCA1" placeholder="e.g. BRCA1, TP53, CFTR"
+             class="w-36 px-2 py-1.5 rounded text-sm text-slate-900 border border-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500">
+      <label for="maxInput" class="text-xs text-slate-300 font-semibold">MAX</label>
+      <select id="maxInput" class="px-2 py-1.5 rounded text-sm text-slate-900 border border-slate-600">
+        <option value="50">50</option>
+        <option value="100">100</option>
+        <option value="200" selected>200</option>
+        <option value="500">500</option>
+      </select>
+      <button id="searchBtn" onclick="searchGene()"
+              class="px-4 py-1.5 rounded text-sm font-bold bg-sky-600 hover:bg-sky-500 active:bg-sky-700 disabled:opacity-50">
+        Load
+      </button>
+    </div>
+  </div>
+  <!-- toolbar -->
+  <div class="bg-slate-800 border-t border-slate-700">
+    <div class="max-w-[1600px] mx-auto px-4 py-2 flex flex-wrap items-center gap-2 text-xs">
+      <span class="text-slate-400 font-semibold mr-1">FILTER</span>
+      <select id="filterSel" onchange="applyFilterSort()" class="px-2 py-1 rounded text-slate-900 text-xs">
+        <option value="all">All classifications</option>
+        <option value="pathogenic">Pathogenic</option>
+        <option value="likely_pathogenic">Likely pathogenic</option>
+        <option value="vus">Uncertain significance (VUS)</option>
+        <option value="benign">Benign / Likely benign</option>
+        <option value="conflicting">Conflicting</option>
+        <option value="other">Other / not provided</option>
+        <option value="am_hit">With AlphaMissense score</option>
+        <option value="am_lp">AM: likely pathogenic</option>
+        <option value="am_amb">AM: ambiguous</option>
+        <option value="am_lb">AM: likely benign</option>
+      </select>
+      <span class="text-slate-400 font-semibold ml-2 mr-1">SORT</span>
+      <select id="sortSel" onchange="applyFilterSort()" class="px-2 py-1 rounded text-slate-900 text-xs">
+        <option value="pos">Residue position</option>
+        <option value="sev">Severity first</option>
+        <option value="am_score">AlphaMissense score</option>
+      </select>
+      <span class="mx-2 text-slate-600">|</span>
+      <button onclick="resetView()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Reset view</button>
+      <button id="spinBtn" onclick="toggleSpin()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Spin: off</button>
+      <button id="labelBtn" onclick="toggleLabels()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Labels: on</button>
+      <button id="sphereBtn" onclick="toggleSpheres()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Spheres: on</button>
+      <button id="plddtBtn" onclick="togglePlddt()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Color: pLDDT</button>
+      <button id="amModeBtn" onclick="toggleAmMode()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 font-semibold">Color: ClinVar</button>
+      <span id="status" class="ml-auto text-slate-300 italic">Ready. Press Load (or Enter).</span>
+    </div>
+  </div>
+</header>
+
+<!-- ============ MAIN ============ -->
+<main class="max-w-[1600px] mx-auto px-4 py-3 grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-3">
+
+  <!-- LEFT: variant list -->
+  <section class="bg-white rounded-xl shadow flex flex-col overflow-hidden" style="max-height: calc(100vh - 190px); min-height: 480px;">
+    <div class="px-3 py-2 border-b border-slate-200 flex items-center gap-2">
+      <h2 class="font-bold text-sm">Missense variants</h2>
+      <span id="varCount" class="text-xs text-slate-500"></span>
+      <span id="structBadge" class="ml-auto text-xs"></span>
+    </div>
+    <div id="proteinInfo" class="px-3 py-2 text-xs text-slate-600 border-b border-slate-100 bg-slate-50"></div>
+    <div id="variantList" class="scroll-thin overflow-y-auto flex-1 divide-y divide-slate-100">
+      <div class="p-4 text-sm text-slate-400">No data yet. Enter a gene symbol and press Load.</div>
+    </div>
+  </section>
+
+  <!-- RIGHT: 3D viewer + details -->
+  <section class="flex flex-col gap-3">
+    <div class="bg-white rounded-xl shadow p-2">
+      <div id="viewport" class="bg-black"></div>
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 px-2 pt-2 text-[11px] text-slate-600">
+        <span class="font-semibold">Structure pLDDT:</span>
+        <span class="flex items-center gap-1">
+          <span class="inline-block w-28 h-2 rounded plddt-bar"></span>
+          <span>low &larr;&rarr; high</span>
+        </span>
+        <span id="legendSig" class="flex items-center gap-2 flex-wrap"></span>
+      </div>
+    </div>
+
+    <div id="details" class="bg-white rounded-xl shadow px-4 py-3 text-sm">
+      <div class="text-slate-400">Select a variant from the list (or click a sphere in 3D) to see details.</div>
+    </div>
+
+    <div class="text-[11px] text-slate-500 px-1 leading-relaxed">
+      <b>Data:</b> ClinVar (NCBI E-utilities) &middot; UniProt REST &middot; AlphaFold DB &middot; rendered with 3Dmol.js.
+      Residue numbers come from ClinVar HGVS p. notation (RefSeq-based). If the RefSeq isoform differs from the UniProt
+      canonical sequence, highlights may be offset &mdash; a mismatch warning is shown per variant when detected.
+      Low-confidence (orange/red) regions of AlphaFold models should be interpreted with caution.
+    </div>
+  </section>
+</main>
+
+<script>
+/* =====================================================================
+   ClinVar Missense 3D Visualizer — single-file app
+   Flow: gene symbol -> ClinVar esearch/esummary (missense) ->
+         UniProt canonical accession -> AlphaFold DB prediction (PDB) ->
+         3Dmol.js rendering with per-residue spheres colored by
+         clinical significance.
+   ===================================================================== */
+
+const EUTILS = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils';
+const UNIPROT = 'https://rest.uniprot.org/uniprotkb/search';
+const AFDB = 'https://alphafold.ebi.ac.uk/api/prediction';
+const MYVARIANT = 'https://myvariant.info/v1';
+
+const AA3 = { ALA:'A', ARG:'R', ASN:'N', ASP:'D', CYS:'C', GLU:'E', GLN:'Q',
+              GLY:'G', HIS:'H', ILE:'I', LEU:'L', LYS:'K', MET:'M', PHE:'F',
+              PRO:'P', SER:'S', THR:'T', TRP:'W', TYR:'Y', VAL:'V',
+              TER:'*', PRI:'?' };
+
+const CAT = {
+  pathogenic:       { label: 'Pathogenic',          color: '#ef4444', rank: 0 },
+  likely_pathogenic:{ label: 'Likely pathogenic',   color: '#fb923c', rank: 1 },
+  conflicting:      { label: 'Conflicting',         color: '#c084fc', rank: 2 },
+  vus:              { label: 'Uncertain significance', color: '#eab308', rank: 3 },
+  other:            { label: 'Other / not provided',color: '#9ca3af', rank: 4 },
+  likely_benign:    { label: 'Likely benign',       color: '#86efac', rank: 5 },
+  benign:           { label: 'Benign',              color: '#16a34a', rank: 6 },
+};
+const FILTER_TO_CATS = { benign: ['benign', 'likely_benign'] };
+
+// AlphaMissense classifications with continuous-score color scale
+const AM_CAT = {
+  likely_pathogenic: { label: 'AM likely pathogenic', color: '#dc2626' },
+  ambiguous:         { label: 'AM ambiguous',          color: '#a16207' },
+  likely_benign:     { label: 'AM likely benign',      color: '#65a30d' },
+};
+// AM continuous score: red (0.564+) → yellow (~0.45) → green (<0.34)
+function amColor(score) {
+  if (score == null) return null;
+  const t = Math.max(0, Math.min(1, score));
+  // 3-stop gradient: green (t<=0.34) → yellow (t=0.45) → red (t>=0.564)
+  // Linear interpolation between stops so the function is C0-continuous.
+  const stops = [
+    [0.00, 22, 163, 74],    // green (likely_benign)
+    [0.34, 101, 163, 13],   // lime
+    [0.45, 245, 158, 11],   // amber/yellow (ambiguous)
+    [0.564, 217, 119, 6],   // dark amber
+    [1.00, 220, 38, 38],    // red (likely_pathogenic)
+  ];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [t0, r0, g0, b0] = stops[i];
+    const [t1, r1, g1, b1] = stops[i + 1];
+    if (t <= t1) {
+      const k = (t - t0) / (t1 - t0);
+      const r = Math.round(r0 + (r1 - r0) * k);
+      const g = Math.round(g0 + (g1 - g0) * k);
+      const b = Math.round(b0 + (b1 - b0) * k);
+      return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+    }
+  }
+  return '#dc2626';
+}
+
+let state = {
+  gene: '', variants: [],        // all parsed variants
+  visible: [],                   // after filter+sort
+  byPos: {},                     // pos -> {pos, color, cat, members:[uidx]}
+  uniprot: null, af: null,       // {accession, id, name, gene}, {pdbUrl, chain, seq, ...}
+  selected: -1,                  // index into state.variants
+  showLabels: true, showSpheres: true, colorMode: 'plddt', amMode: false, spinning: false,
+  viewer: null, modelLoaded: false,
+  amStats: null,                  // {hit, lp, amb, lb, total} — set after AlphaMissense fetch
+};
+
+function setStatus(msg) { document.getElementById('status').textContent = msg; }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+/* ---------------- parsing helpers ---------------- */
+
+function canonAA(s) {
+  s = String(s).trim();
+  if (s.length === 1) { const u = s.toUpperCase(); return u === '*' ? '*' : u; }
+  return AA3[s.toUpperCase()] || '?';
+}
+
+// "NP_009225.1:p.Arg175His" or "...:p.R175H" -> {ref:'R', pos:175, alt:'H'}
+// The negative lookahead rejects frameshifts (p.Gln1756Profs*74),
+// extensions and other non-substitution notations.
+function parseP(hgvs) {
+  const m = /p\.([A-Za-z*]{1,3})(\d+)([A-Za-z*]{1,3})(?![A-Za-z*])/.exec(hgvs || '');
+  if (!m) return null;
+  const ref = canonAA(m[1]), alt = canonAA(m[3]);
+  if (ref === '?' || alt === '?') return null;
+  return { ref, pos: parseInt(m[2], 10), alt };
+}
+
+function classify(sig) {
+  const s = (sig || '').toLowerCase();
+  if (!s || s === 'not provided' || s === 'no assertion' || s === '-') return 'other';
+  if (s.includes('conflict')) return 'conflicting';
+  if (s.startsWith('pathogenic')) return 'pathogenic';       // covers "Pathogenic/Likely pathogenic"
+  if (s.includes('likely pathogenic')) return 'likely_pathogenic';
+  if (s.includes('uncertain') || s === 'vus' || s.includes('vus')) return 'vus';
+  if (s.includes('likely benign')) return 'likely_benign';
+  if (s.includes('benign')) return 'benign';
+  return 'other';
+}
+
+function shortChange(v) { return v.ref + v.pos + v.alt; }
+
+// AlphaMissense pred code -> our category. Thresholds from the paper:
+//   P if score > 0.564; B if score < 0.34; A otherwise. We accept the code from dbNSFP.
+function amClassFromCode(code) {
+  if (code === 'P') return 'likely_pathogenic';
+  if (code === 'B') return 'likely_benign';
+  if (code === 'A') return 'ambiguous';
+  return null;
+}
+function computeAmStats(recs) {
+  let hit = 0, lp = 0, amb = 0, lb = 0;
+  for (const v of recs) if (v.am) {
+    hit++;
+    if (v.am.amCat === 'likely_pathogenic') lp++;
+    else if (v.am.amCat === 'ambiguous') amb++;
+    else if (v.am.amCat === 'likely_benign') lb++;
+  }
+  return { hit, lp, amb, lb, total: recs.length };
+}
+
+/* ---------------- ClinVar / UniProt / AFDB fetching ---------------- */
+
+async function fetchJson(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('HTTP ' + r.status + ' — ' + url);
+  return r.json();
+}
+
+// Bulk-fetch AlphaMissense (via dbNSFP) scores from MyVariant.info for given ClinVar UIDs.
+// POST /v1/variant with `ids: ["clinvar.variant_id:<uid>", ...]` returns
+// `[{query, notfound, dbnsfp.alphamissense}, ...]` — query echoes back the lookup key.
+// Coverage depends on whether the ClinVar UID is in the dbNSFP release.
+async function fetchAlphaMissense(uids) {
+  const map = new Map();
+  if (!uids.length) return map;
+  for (let i = 0; i < uids.length; i += 80) {
+    const chunk = uids.slice(i, i + 80);
+    const ids = chunk.map(u => `clinvar.variant_id:${u}`);
+    try {
+      const r = await fetch(`${MYVARIANT}/variant`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids, fields: ['dbnsfp.alphamissense'] }),
+      });
+      if (!r.ok) continue;
+      const arr = await r.json();
+      if (!Array.isArray(arr)) continue;
+      for (const item of arr) {
+        if (!item || item.notfound) continue;
+        const m = /clinvar\.variant_id:(\d+)/.exec(item.query || '');
+        if (!m) continue;
+        const db = item.dbnsfp;
+        if (!db || typeof db !== 'object') continue;
+        const am = db.alphamissense;
+        if (!am || !am.score || !am.score.length) continue;
+        const score = Math.max(...am.score);
+        // AlphaMissense pred codes: 'P' = likely_pathogenic, 'A' = ambiguous, 'B' = likely_benign
+        const top = am.pred[am.score.indexOf(score)] || am.pred[0] || null;
+        map.set(m[1], {
+          score,
+          class: top,                   // 'P' | 'A' | 'B'
+          rankScore: typeof am.rankscore === 'number' ? am.rankscore : null,
+          nIso: am.score.length,
+        });
+      }
+    } catch (e) {
+      console.warn('AlphaMissense batch failed:', e.message);
+    }
+  }
+  return map;
+}
+
+function parseRecord(uid, rec, wantGene) {
+  const mc = rec.molecular_consequence_list || [];
+  if (!mc.some(x => /missense/i.test(x))) return null;
+  const genes = (rec.genes || []).map(g => g.symbol).filter(Boolean);
+  if (!genes.some(g => g.toUpperCase() === wantGene)) return null;
+  let hit = null;
+  for (const v of (rec.variation_set || [])) {
+    const p = parseP(v.variation_name || '');
+    // skip stop-gained (p.Arg123*) and synonymous (p.Arg123Arg): not missense
+    if (p && p.alt !== '*' && p.ref !== p.alt) { hit = { v, p }; break; }
+  }
+  if (!hit) return null;
+  const germ = rec.germline_classification || {};
+  const rs = ((hit.v.variation_xrefs || []).find(x => x.db_source === 'dbSNP') || {}).db_id || '';
+  return {
+    uid: String(uid),
+    gene: genes.find(g => g.toUpperCase() === wantGene) || genes[0],
+    ref: hit.p.ref, pos: hit.p.pos, alt: hit.p.alt,
+    hgvs_p: hit.v.variation_name || '',
+    cdna: hit.v.cdna_change || '',
+    sig: germ.description || 'not provided',
+    cat: classify(germ.description),
+    review: germ.review_status || '',
+    lastEval: (germ.last_evaluated || '').split(' ')[0],
+    traits: (germ.trait_set || []).map(t => t.trait_name).filter(Boolean),
+    vcv: (rec.accession || '').split('.')[0],
+    rsid: rs,
+  };
+}
+
+async function searchGene() {
+  const geneRaw = document.getElementById('geneInput').value.trim();
+  if (!geneRaw) { setStatus('Enter a gene symbol first.'); return; }
+  const gene = geneRaw.toUpperCase();
+  const max = parseInt(document.getElementById('maxInput').value, 10) || 200;
+  const btn = document.getElementById('searchBtn');
+  btn.disabled = true;
+  state.selected = -1; state.variants = []; state.visible = []; state.byPos = {};
+  state.af = null; state.uniprot = null; state.modelLoaded = false; state.amStats = null;
+  renderList(); renderDetails(); drawLegend();
+
+  try {
+    // 1. ClinVar search
+    setStatus('Searching ClinVar for missense variants in ' + gene + ' …');
+    const term = encodeURIComponent(gene + '[gene]') + '+AND+' + encodeURIComponent('missense[variant type]');
+    const es = await fetchJson(`${EUTILS}/esearch.fcgi?db=clinvar&term=${term}&retmax=${max}&retmode=json`);
+    const ids = ((es.esearchresult || {}).idlist || []);
+    const total = parseInt(((es.esearchresult || {}).count) || '0', 10);
+    if (!ids.length) { setStatus(`No missense ClinVar records found for ${gene}.`); btn.disabled = false; return; }
+    setStatus(`Found ${total} records — fetching summaries for ${ids.length} …`);
+
+    // 2. Summaries in batches
+    const recs = [];
+    for (let i = 0; i < ids.length; i += 150) {
+      const chunk = ids.slice(i, i + 150);
+      const sm = await fetchJson(`${EUTILS}/esummary.fcgi?db=clinvar&id=${chunk.join(',')}&retmode=json`);
+      const res = sm.result || {};
+      for (const uid of (res.uids || chunk)) {
+        if (!res[uid]) continue;
+        const v = parseRecord(uid, res[uid], gene);
+        if (v) recs.push(v);
+      }
+      setStatus(`Parsed ${recs.length} missense variants (${Math.min(i + 150, ids.length)}/${ids.length}) …`);
+    }
+    if (!recs.length) { setStatus(`No parseable missense protein changes for ${gene}.`); btn.disabled = false; return; }
+    state.gene = gene;
+    state.variants = recs;
+
+    // 2b. AlphaMissense scores (MyVariant / dbNSFP) — runs in parallel with structure fetch
+    const amPromise = fetchAlphaMissense(recs.map(v => v.uid)).then(amMap => {
+      for (const v of recs) {
+        const am = amMap.get(v.uid);
+        v.am = am ? { ...am, amCat: amClassFromCode(am.class) } : null;
+      }
+      state.amStats = computeAmStats(recs);
+    }).catch(e => { console.warn('AM fetch failed:', e); state.amStats = null; });
+
+    // 3. UniProt canonical accession
+    setStatus('Mapping ' + gene + ' to UniProt …');
+    const uq = encodeURIComponent(`gene:${gene} AND organism_id:9606 AND reviewed:true`);
+    const ujs = await fetchJson(`${UNIPROT}?query=${uq}&format=json&size=10`);
+    const ures = ujs.results || [];
+    let best = ures.find(r => (r.genes || []).some(g => (g.geneName || {}).value === gene)) || ures[0];
+    if (!best) throw new Error('No reviewed human UniProt entry found for ' + gene);
+    const uname = (((best.proteinDescription || {}).recommendedName || {}).fullName || {}).value || '';
+    state.uniprot = { accession: best.primaryAccession, id: best.uniProtkbId || '', name: uname, gene };
+    renderProteinInfo();
+
+    // 4. AlphaFold prediction
+    setStatus('Fetching AlphaFold model for ' + state.uniprot.accession + ' …');
+    let afArr = null;
+    try { afArr = await fetchJson(`${AFDB}/${state.uniprot.accession}`); } catch (e) { afArr = null; }
+    const af = Array.isArray(afArr) ? afArr.find(p => p.pdbUrl) || afArr[0] : null;
+    if (af && af.pdbUrl) {
+      state.af = { pdbUrl: af.pdbUrl, chain: af.chainId || 'A', seq: af.sequence || '',
+                   desc: af.uniprotDescription || '', avgPlddt: af.globalMetricValue };
+      // numbering validation against AF/UniProt sequence
+      for (const v of state.variants) {
+        const seqRef = state.af.seq ? state.af.seq[v.pos - 1] : '';
+        v.seqRef = seqRef || '';
+        v.inModel = !!(state.af.seq && v.pos >= 1 && v.pos <= state.af.seq.length);
+        v.refMatch = v.inModel ? (seqRef === v.ref) : false;
+      }
+      // 5. Download PDB + render
+      setStatus('Downloading structure …');
+      const pr = await fetch(state.af.pdbUrl);
+      if (!pr.ok) throw new Error('Could not download PDB (' + pr.status + ')');
+      loadStructure(await pr.text());
+    } else {
+      setStatus('No AlphaFold model for ' + state.uniprot.accession + ' — variants listed without 3D.');
+      document.getElementById('structBadge').innerHTML =
+        '<span class="badge bg-amber-100 text-amber-800">no AFDB model</span>';
+    }
+    applyFilterSort();
+    await amPromise;                  // ensure AM stats & badge are ready before final status
+    renderList(); drawLegend();       // re-render so AM badges appear
+    setStatus(`Done: ${state.variants.length} missense variants for ${gene} → ${state.uniprot.accession} · ` +
+      `${state.amStats ? state.amStats.hit + ' with AlphaMissense' : 'AlphaMissense not loaded'}. Click a row or sphere.`);
+  } catch (err) {
+    console.error(err);
+    setStatus('Error: ' + err.message);
+  }
+  btn.disabled = false;
+}
+
+/* ---------------- filter / sort / list ---------------- */
+
+function applyFilterSort() {
+  const f = document.getElementById('filterSel').value;
+  const s = document.getElementById('sortSel').value;
+  let arr = state.variants.slice();
+  if (f !== 'all') {
+    if (f === 'am_hit') arr = arr.filter(v => v.am);
+    else if (f === 'am_lp') arr = arr.filter(v => v.am && v.am.amCat === 'likely_pathogenic');
+    else if (f === 'am_amb') arr = arr.filter(v => v.am && v.am.amCat === 'ambiguous');
+    else if (f === 'am_lb') arr = arr.filter(v => v.am && v.am.amCat === 'likely_benign');
+    else {
+      const cats = FILTER_TO_CATS[f] || [f];
+      arr = arr.filter(v => cats.includes(v.cat));
+    }
+  }
+  if (s === 'pos') arr.sort((a, b) => a.pos - b.pos || a.uid.localeCompare(b.uid));
+  else if (s === 'am_score') arr.sort((a, b) => (b.am?.score ?? -1) - (a.am?.score ?? -1) || a.pos - b.pos);
+  else arr.sort((a, b) => CAT[a.cat].rank - CAT[b.cat].rank || a.pos - b.pos);
+  state.visible = arr;
+  buildByPos();
+  renderList();
+  refreshSpheres();
+}
+
+function buildByPos() {
+  const byPos = {};
+  state.visible.forEach((v, i) => {
+    const p = v.pos;
+    if (!byPos[p]) byPos[p] = { pos: p, members: [] };
+    byPos[p].members.push(i);
+  });
+  for (const p of Object.keys(byPos)) {
+    const g = byPos[p];
+    // representative = most severe, then lowest uid
+    g.members.sort((ia, ib) => {
+      const a = state.visible[ia], b = state.visible[ib];
+      return CAT[a.cat].rank - CAT[b.cat].rank || a.uid.localeCompare(b.uid);
+    });
+    const rep = state.visible[g.members[0]];
+    g.rep = rep; g.cat = rep.cat; g.color = CAT[rep.cat].color;
+    // AM alternative: if any member has an AM score, prefer it
+    if (state.colorMode === 'am') {
+      const withAm = g.members.map(i => state.visible[i]).find(v => v.am);
+      if (withAm) {
+        g.color = AM_CAT[withAm.am.amCat] ? AM_CAT[withAm.am.amCat].color : amColor(withAm.am.score);
+        g.cat = withAm.am.amCat;
+      } else {
+        g.color = '#9ca3af';   // grey if no AM data
+      }
+    }
+  }
+  state.byPos = byPos;
+}
+
+function renderProteinInfo() {
+  const el = document.getElementById('proteinInfo');
+  if (!state.uniprot) { el.innerHTML = ''; return; }
+  const u = state.uniprot;
+  el.innerHTML =
+    `<div class="font-semibold text-slate-800">${esc(u.gene)} &rarr; UniProt <span class="font-mono">${esc(u.accession)}</span></div>` +
+    `<div class="truncate" title="${esc(u.name)}">${esc(u.name || u.id)}</div>` +
+    (state.af ? `<div class="mt-1 flex gap-2">
+        <a class="text-sky-700 hover:underline" target="_blank" href="https://alphafold.ebi.ac.uk/entry/${esc(u.accession)}">AlphaFold entry</a>
+        <a class="text-sky-700 hover:underline" target="_blank" href="${esc(state.af.pdbUrl)}">PDB file</a>
+      </div>` : '');
+}
+
+function renderList() {
+  const box = document.getElementById('variantList');
+  document.getElementById('varCount').textContent =
+    state.visible.length ? `${state.visible.length} shown (${state.variants.length} total)` : '';
+  if (!state.visible.length) {
+    box.innerHTML = '<div class="p-4 text-sm text-slate-400">' +
+      (state.variants.length ? 'No variants match this filter.' : 'No data yet. Enter a gene symbol and press Load.') + '</div>';
+    return;
+  }
+  box.innerHTML = state.visible.map((v, i) => {
+    const c = CAT[v.cat];
+    const sel = (state.variants.indexOf(v) === state.selected) ? ' selected' : '';
+    const flag = v.inModel === false ? ' ⚠️' : (v.refMatch === false ? ' *' : '');
+    const am = v.am;
+    const amBadge = am ? (() => {
+      const col = AM_CAT[am.amCat] ? AM_CAT[am.amCat].color : amColor(am.score);
+      const sc = am.score != null ? am.score.toFixed(3) : '—';
+      return `<span class="badge ml-1 font-mono" style="background:${col}22;color:${col};border:1px solid ${col}55" title="AlphaMissense ${am.nIso} isoform(s)">AM ${sc}</span>`;
+    })() : '';
+    return `<div class="variant-row px-3 py-2 border-l-4 flex items-start gap-2${sel}" style="border-left-color:${c.color}" data-i="${i}" onclick="selectVisible(${i}, true)">
+      <span class="mt-1 inline-block w-2.5 h-2.5 rounded-full shrink-0" style="background:${c.color}"></span>
+      <div class="min-w-0">
+        <div class="font-mono font-bold text-[13px] leading-tight">p.${esc(shortChange(v))}${flag}
+          <span class="badge ml-1" style="background:${c.color}22;color:${c.color};border:1px solid ${c.color}55">${esc(c.label)}</span>
+          ${amBadge}
+        </div>
+        <div class="text-[11px] text-slate-500 truncate">${esc(v.traits[0] || 'condition not specified')}</div>
+        <div class="text-[10px] text-slate-400 font-mono">VCV ${esc(v.vcv)}${v.rsid ? ' · rs' + esc(v.rsid) : ''}</div>
+      </div>
+    </div>`;
+  }).join('');
+  const selIdx = state.visible.findIndex(v => state.variants.indexOf(v) === state.selected);
+  if (selIdx >= 0) {
+    const el = box.querySelector(`[data-i="${selIdx}"]`);
+    if (el) el.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function drawLegend() {
+  const sig = '<span class="font-semibold">ClinVar:</span>' + Object.keys(CAT).map(k =>
+    `<span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:${CAT[k].color}"></span>${CAT[k].label}</span>`
+  ).join('');
+  const am = state.amStats && state.amStats.hit
+    ? '<span class="font-semibold ml-3">AlphaMissense:</span>' + ['likely_pathogenic','ambiguous','likely_benign'].map(k =>
+        `<span class="flex items-center gap-1"><span class="inline-block w-2.5 h-2.5 rounded-full" style="background:${AM_CAT[k].color}"></span>${AM_CAT[k].label.replace(/^AM /, '')}</span>`
+      ).join('') + `<span class="text-slate-500">${state.amStats.hit}/${state.amStats.total} scored</span>`
+    : '';
+  document.getElementById('legendSig').innerHTML = sig + am;
+}
+
+/* ---------------- selection + details ---------------- */
+
+function selectVisible(i, zoom) {
+  const v = state.visible[i];
+  if (!v) return;
+  state.selected = state.variants.indexOf(v);
+  renderList(); renderDetails(); refreshSpheres();
+  if (zoom && state.modelLoaded && v.inModel !== false) {
+    const sel = chainSel({ resi: v.pos });
+    state.viewer.zoomTo(sel);
+    state.viewer.render();
+  }
+}
+
+function selectByPos(pos) {
+  const g = state.byPos[pos];
+  if (!g) return;
+  const i = state.visible.indexOf(g.rep);
+  selectVisible(i, true);
+}
+
+function renderDetails() {
+  const box = document.getElementById('details');
+  const v = state.variants[state.selected];
+  if (!v) { box.innerHTML = '<div class="text-slate-400">Select a variant from the list (or click a sphere in 3D) to see details.</div>'; return; }
+  const c = CAT[v.cat];
+  const cvUrl = `https://www.ncbi.nlm.nih.gov/clinvar/variation/${v.uid}/`;
+  const rsUrl = v.rsid ? `https://www.ncbi.nlm.nih.gov/snp/rs${v.rsid}` : '';
+  let siteInfo = '';
+  if (state.modelLoaded && state.af) {
+    const ca = state.viewer.selectedAtoms(chainSel({ resi: v.pos, atom: 'CA' }))[0];
+    const pl = ca && ca.b != null ? ca.b.toFixed(1) : 'n/a';
+    siteInfo = `<div class="mt-1 text-xs">AlphaFold residue <b class="font-mono">${v.pos}</b> (chain ${esc(state.af.chain)}) &middot; Cα pLDDT <b>${pl}</b></div>`;
+  }
+  let numWarn = '';
+  if (v.inModel === false) numWarn = '<div class="mt-1 text-xs text-red-600 font-semibold">⚠️ Position is outside the modeled sequence.</div>';
+  else if (v.refMatch === false) numWarn = `<div class="mt-1 text-xs text-amber-700 font-semibold">* Ref-AA mismatch: ClinVar says <span class="font-mono">${esc(v.ref)}</span> but UniProt/AF sequence has <span class="font-mono">${esc(v.seqRef || '?')}</span> here — numbering may be offset (different isoform).</div>`;
+
+  const others = state.visible.filter(x => x.pos === v.pos && x !== v);
+  const am = v.am;
+  const amSection = am ? (() => {
+    const col = AM_CAT[am.amCat] ? AM_CAT[am.amCat].color : amColor(am.score);
+    const lbl = AM_CAT[am.amCat] ? AM_CAT[am.amCat].label : 'AM unknown';
+    const pct = am.score != null ? (am.score * 100).toFixed(1) + '%' : '—';
+    return `<div class="mt-2 px-3 py-2 rounded-lg" style="background:${col}11;border:1px solid ${col}55">
+      <div class="flex items-center gap-2">
+        <span class="badge" style="background:${col};color:#fff">${esc(lbl)}</span>
+        <span class="text-xs font-semibold" style="color:${col}">AlphaMissense score: <span class="font-mono">${pct}</span></span>
+        ${am.rankScore != null ? `<span class="text-[11px] text-slate-500 font-mono">rank ${am.rankScore.toFixed(3)}</span>` : ''}
+      </div>
+      <div class="mt-1 text-[11px] text-slate-500">
+        Predicted across <b>${am.nIso}</b> transcript isoform(s). Reference: Cheng et al.,
+        <i>Science</i> 2023 (doi:10.1126/science.adg7492). AM was not trained on ClinVar;
+        thresholds: P &gt; 0.564, B &lt; 0.34.
+      </div>
+    </div>`;
+  })() : (state.amStats ? `<div class="mt-2 text-[11px] text-slate-500">No AlphaMissense data for this variant in dbNSFP.</div>` : '');
+
+  box.innerHTML = `
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="font-mono text-xl font-bold">p.${esc(shortChange(v))}</span>
+      <span class="badge" style="background:${c.color}22;color:${c.color};border:1px solid ${c.color}55">${esc(c.label)}</span>
+      <span class="text-xs text-slate-500">${esc(v.gene)}</span>
+      <span class="ml-auto text-xs flex gap-2">
+        <a class="text-sky-700 hover:underline" target="_blank" href="${cvUrl}">ClinVar ${esc(v.vcv)}</a>
+        ${rsUrl ? `<a class="text-sky-700 hover:underline" target="_blank" href="${rsUrl}">rs${esc(v.rsid)}</a>` : ''}
+      </span>
+    </div>
+    <div class="mt-1 font-mono text-xs text-slate-600 break-all">${esc(v.hgvs_p)}${v.cdna ? ' &nbsp;·&nbsp; ' + esc(v.cdna) : ''}</div>
+    ${siteInfo}${numWarn}${amSection}
+    <div class="mt-2 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 text-xs">
+      <div><span class="text-slate-500">Condition(s):</span> ${esc(v.traits.slice(0, 4).join('; ') || 'not specified')}</div>
+      <div><span class="text-slate-500">Review status:</span> ${esc(v.review || '—')}</div>
+      <div><span class="text-slate-500">Last evaluated:</span> ${esc(v.lastEval || '—')}</div>
+      <div><span class="text-slate-500">Molecular consequence:</span> missense variant</div>
+    </div>
+    ${others.length ? `<div class="mt-2 text-xs"><span class="text-slate-500">Also at residue ${v.pos}:</span> ` +
+      others.map(o => `<button class="font-mono text-sky-700 hover:underline mr-2" onclick="selectVisible(${state.visible.indexOf(o)}, true)">p.${esc(shortChange(o))} (${esc(CAT[o.cat].label)})</button>`).join('') + '</div>' : ''}`;
+}
+
+/* ---------------- 3Dmol viewer ---------------- */
+
+function chainSel(extra) {
+  const s = Object.assign({}, extra);
+  if (state.af && state.af.chain) s.chain = state.af.chain;
+  return s;
+}
+
+function ensureViewer() {
+  if (state.viewer) return;
+  state.viewer = $3Dmol.createViewer(document.getElementById('viewport'), { backgroundColor: 'black' });
+  state.viewer.setBackgroundColor(0x0b1020);
+  state.viewer.render();
+  window.addEventListener('resize', () => { if (state.viewer) { state.viewer.resize(); state.viewer.render(); } });
+}
+
+function cartoonStyle() {
+  if (state.colorMode === 'solid') return { cartoon: { color: '#9fb3c8' } };
+  // pLDDT and am both keep pLDDT coloring on the cartoon; sphere colors come from buildByPos
+  return { cartoon: { colorscheme: { prop: 'b', gradient: 'roygb', min: 50, max: 90 } } };
+}
+
+function loadStructure(pdbText) {
+  ensureViewer();
+  const vw = state.viewer;
+  vw.removeAllModels();
+  vw.addModel(pdbText, 'pdb');
+  state.modelLoaded = true;
+  applyCartoon();
+  refreshSpheres();
+  vw.zoomTo();
+  vw.render();
+  const n = Object.keys(state.byPos).length;
+  document.getElementById('structBadge').innerHTML =
+    `<span class="badge bg-emerald-100 text-emerald-800">${esc(state.uniprot.accession)} · ${n} site${n === 1 ? '' : 's'}</span>`;
+}
+
+function applyCartoon() {
+  if (!state.modelLoaded) return;
+  state.viewer.setStyle({}, cartoonStyle());
+}
+
+function centroid(atoms) {
+  let x = 0, y = 0, z = 0;
+  for (const a of atoms) { x += a.x; y += a.y; z += a.z; }
+  return { x: x / atoms.length, y: y / atoms.length, z: z / atoms.length };
+}
+
+function refreshSpheres() {
+  if (!state.modelLoaded) return;
+  ensureViewer();
+  const vw = state.viewer;
+  vw.removeAllLabels();
+  vw.removeAllShapes();
+  applyCartoon();
+
+  const positions = Object.keys(state.byPos).map(Number).sort((a, b) => a - b);
+  const CAP = 600;
+  positions.slice(0, CAP).forEach(pos => {
+    const g = state.byPos[pos];
+    const atoms = vw.selectedAtoms(chainSel({ resi: pos }));
+    if (!atoms.length) return;
+    const ca = atoms.find(a => a.atom === 'CA') || atoms[0];
+    if (state.showSpheres) {
+      vw.addSphere({ center: { x: ca.x, y: ca.y, z: ca.z }, radius: 1.25, color: g.color, opacity: 0.95 });
+    }
+    vw.setClickable(chainSel({ resi: pos }), true, () => selectByPos(pos));
+    if (state.showLabels && (positions.length <= 60 || g.rep === (state.variants[state.selected] || {}))) {
+      vw.addLabel('p.' + shortChange(g.rep), {
+        position: { x: ca.x, y: ca.y + 2.2, z: ca.z },
+        backgroundColor: 0x0f172a, fontColor: '#fff', fontSize: 11,
+        showBackground: true, backgroundOpacity: 0.85,
+      });
+    }
+  });
+
+  // selected-variant highlight ring
+  const v = state.variants[state.selected];
+  if (v && state.byPos[v.pos]) {
+    const atoms = vw.selectedAtoms(chainSel({ resi: v.pos }));
+    if (atoms.length) {
+      if (state.showSpheres) {
+        const c = centroid(atoms);
+        vw.addSphere({ center: c, radius: 2.4, color: '#ffffff', opacity: 0.28 });
+      }
+      vw.setStyle(chainSel({ resi: v.pos }), { stick: { radius: 0.35, color: '#ffffff' } });
+    }
+  }
+  vw.render();
+}
+
+/* ---------------- view controls ---------------- */
+
+function resetView() { if (state.modelLoaded) { state.viewer.zoomTo(); state.viewer.render(); } }
+function toggleSpin() {
+  state.spinning = !state.spinning;
+  document.getElementById('spinBtn').textContent = 'Spin: ' + (state.spinning ? 'on' : 'off');
+  if (state.modelLoaded) state.viewer.spin(state.spinning ? 'y' : false);
+}
+function toggleLabels() {
+  state.showLabels = !state.showLabels;
+  document.getElementById('labelBtn').textContent = 'Labels: ' + (state.showLabels ? 'on' : 'off');
+  refreshSpheres();
+}
+function toggleSpheres() {
+  state.showSpheres = !state.showSpheres;
+  document.getElementById('sphereBtn').textContent = 'Spheres: ' + (state.showSpheres ? 'on' : 'off');
+  refreshSpheres();
+}
+function togglePlddt() {
+  state.colorMode = state.colorMode === 'plddt' ? 'solid' : 'plddt';
+  document.getElementById('plddtBtn').textContent = 'Color: ' + (state.colorMode === 'plddt' ? 'pLDDT' : 'solid');
+  refreshSpheres();
+}
+function toggleAmMode() {
+  state.amMode = !state.amMode;
+  state.colorMode = state.amMode ? 'am' : 'plddt';
+  document.getElementById('amModeBtn').textContent = 'Color: ' + (state.amMode ? 'AlphaMissense' : 'ClinVar');
+  buildByPos();
+  refreshSpheres();
+}
+
+/* ---------------- init ---------------- */
+
+document.getElementById('geneInput').addEventListener('keydown', e => { if (e.key === 'Enter') searchGene(); });
+ensureViewer();
+drawLegend();
+searchGene();   // auto-load default gene
+</script>
+</body>
+</html>
