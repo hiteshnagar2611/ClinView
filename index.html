@@ -11,7 +11,13 @@
   body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   /* App shell fills the viewport without page-level scrolling. */
   .app-shell { display: flex; flex-direction: column; height: 100vh; min-height: 0; }
-  .app-main  { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 340px 1fr; gap: 12px; padding: 12px; max-width: 1600px; width: 100%; margin: 0 auto; }
+  .app-main  {
+    flex: 1 1 auto; min-height: 0;
+    display: grid; grid-template-columns: 340px 1fr;
+    grid-template-rows: minmax(0, 1fr);
+    gap: 12px; padding: 12px;
+    max-width: 1600px; width: 100%; margin: 0 auto;
+  }
   #viewport { position: relative; width: 100%; height: 100%; min-height: 360px; border-radius: 0.75rem; overflow: hidden; background: #000; }
   #viewport canvas { display: block; }
   .variant-row { cursor: pointer; transition: background-color 0.12s ease; }
@@ -25,14 +31,23 @@
   .plddt-bar { background: linear-gradient(to right, #d62728, #ff7f0e, #eab308, #2ca02c, #1f77d4); }
   .badge { font-size: 0.68rem; font-weight: 600; padding: 0.1rem 0.45rem; border-radius: 9999px; white-space: nowrap; }
   #viewport .atom-label { pointer-events: none; }
-  /* Right column: viewer fills, details + footer fixed at bottom */
-  .app-right { display: flex; flex-direction: column; min-height: 0; gap: 10px; }
-  .app-right .viewer-card { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-  .app-right .viewer-card > #viewport { flex: 1 1 auto; min-height: 0; }
+  /* Right column: viewer fills the row, details + footer fixed at bottom */
+  .app-right {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto auto;
+    gap: 10px;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .viewer-card { background: white; border-radius: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); padding: 8px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .viewer-card > #viewport { flex: 1 1 auto; min-height: 0; }
   /* Left column: variant list fills */
-  .app-left { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .app-left { display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: white; border-radius: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
   /* Responsive: collapse to single column on narrow screens */
-  @media (max-width: 900px) { .app-main { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) {
+    .app-main { grid-template-columns: 1fr; grid-template-rows: minmax(280px, 50vh) minmax(0, 1fr); }
+    .app-right { grid-template-rows: minmax(0, 1fr) auto auto; }
+  }
   details.cite > summary { list-style: none; cursor: pointer; color: #475569; }
   details.cite > summary::-webkit-details-marker { display: none; }
   details.cite > summary::before { content: '▸ '; display: inline-block; transition: transform 0.15s; }
@@ -110,7 +125,7 @@
 <!-- ============ MAIN ============ -->
 <div class="app-main">
   <!-- LEFT: variant list -->
-  <section class="app-left bg-white rounded-xl shadow">
+  <section class="app-left">
     <div class="px-3 py-1.5 border-b border-slate-200 flex items-center gap-2">
       <h2 class="font-bold text-sm">Missense variants</h2>
       <span id="varCount" class="text-xs text-slate-500"></span>
@@ -129,7 +144,7 @@
 
   <!-- RIGHT: 3D viewer + details + citations + footer -->
   <section class="app-right">
-    <div class="viewer-card bg-white rounded-xl shadow p-2">
+    <div class="viewer-card">
       <div id="viewport"></div>
       <div class="flex flex-wrap items-center gap-x-4 gap-y-1 px-2 pt-2 text-[11px] text-slate-600">
         <span class="font-semibold">Structure pLDDT:</span>
@@ -735,7 +750,21 @@ function selectVisible(i, zoom) {
   renderList(); renderDetails(); refreshSpheres();
   if (zoom && state.modelLoaded && v.inModel !== false) {
     const sel = chainSel({ resi: v.pos });
-    state.viewer.zoomTo(sel);
+    const atoms = state.viewer.selectedAtoms(sel);
+    if (atoms.length) {
+      state.viewer.zoomTo(sel);
+    } else {
+      // Residue has no ATOM records (outside model / chain break) —
+      // zoom to the closest modelled residue by distance to the sphere we placed.
+      const g = state.byPos[v.pos];
+      if (g) {
+        const nearby = state.viewer.selectedAtoms({ chain: state.af.chain }).filter(a => a.atom === 'CA');
+        if (nearby.length) {
+          const target = nearby.reduce((best, a) => Math.abs(a.resi - v.pos) < Math.abs(best.resi - v.pos) ? a : best, nearby[0]);
+          state.viewer.zoomTo({ chain: state.af.chain, resi: target.resi });
+        }
+      }
+    }
     state.viewer.render();
   }
 }
@@ -819,7 +848,12 @@ function ensureViewer() {
   state.viewer = $3Dmol.createViewer(document.getElementById('viewport'), { backgroundColor: 'black' });
   state.viewer.setBackgroundColor(0x0b1020);
   state.viewer.render();
+  // Resize on every layout-relevant event so the WebGL canvas matches its CSS box
   window.addEventListener('resize', () => { if (state.viewer) { state.viewer.resize(); state.viewer.render(); } });
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => { if (state.viewer) { state.viewer.resize(); state.viewer.render(); } })
+      .observe(document.getElementById('viewport'));
+  }
 }
 
 function cartoonStyle() {
@@ -834,6 +868,9 @@ function loadStructure(pdbText) {
   vw.removeAllModels();
   vw.addModel(pdbText, 'pdb');
   state.modelLoaded = true;
+  // Resize the viewer to the freshly-laid-out container, then re-set styles
+  // and add spheres (refreshSpheres is idempotent thanks to removeAllLabels/Shapes).
+  vw.resize();
   applyCartoon();
   refreshSpheres();
   vw.zoomTo();
